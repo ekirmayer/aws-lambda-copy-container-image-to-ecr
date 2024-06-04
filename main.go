@@ -22,12 +22,37 @@ type RequestBody struct {
 	Dest string `json:"dest"`
 }
 
+type SqsBody struct {
+	Src struct {
+		Image   string `json:"image"`
+		Account string `json:"account"`
+	} `json:"src"`
+	Dst struct {
+		Image   string `json:"image"`
+		Account string `json:"account"`
+	} `json:"dst"`
+}
+
 func init() {
 	logs.Warn.SetOutput(os.Stderr)
 	logs.Progress.SetOutput(os.Stderr)
 }
 
-func handler(ctx context.Context, event events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
+func copy_image(src string, dst string) (error) {
+	log.Printf("COPY EVENT: Copy %s to %s", src, dst)
+
+	ecrHelper := ecr.NewECRHelper(ecr.WithClientFactory(api.DefaultClientFactory{}))
+
+	if err := crane.Copy(src, dst, crane.WithAuthFromKeychain(authn.NewMultiKeychain(authn.DefaultKeychain, authn.NewKeychainFromHelper(ecrHelper)))); err != nil {
+		
+		// cancel()
+		fmt.Printf("log.Logger:")
+		return err
+	}
+	return nil
+}
+
+func function_handler(ctx context.Context, event events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
 	fmt.Printf("Processing request data for request %s.\n", event.RequestContext.RequestID)
 	fmt.Printf("Request Body: %s\n", event.Body)
 
@@ -47,11 +72,9 @@ func handler(ctx context.Context, event events.LambdaFunctionURLRequest) (events
 			Body:       "Invalid request body",
 		}, nil
 	}
-	log.Printf("COPY EVENT: Copy %s to %s", requestBody.Src, requestBody.Dest)
 
-	ecrHelper := ecr.NewECRHelper(ecr.WithClientFactory(api.DefaultClientFactory{}))
 
-	if err := crane.Copy(requestBody.Src, requestBody.Dest, crane.WithAuthFromKeychain(authn.NewMultiKeychain(authn.DefaultKeychain, authn.NewKeychainFromHelper(ecrHelper)))); err != nil {
+	if err := copy_image(requestBody.Src, requestBody.Dest); err != nil {
 		// cancel()
 		fmt.Printf("log.Logger:")
 		return events.LambdaFunctionURLResponse{
@@ -65,6 +88,29 @@ func handler(ctx context.Context, event events.LambdaFunctionURLRequest) (events
 	}, nil
 }
 
+func sqs_handler(ctx context.Context, sqsEvent events.SQSEvent) (error) {
+	var sqsBody SqsBody
+	for _, message := range sqsEvent.Records {
+		fmt.Printf("The message %s for event source %s = %s \n", message.MessageId, message.EventSource, message.Body)
+		if err := json.Unmarshal([]byte(message.Body), &sqsBody); err != nil {
+			return err
+		}
+
+		if err := copy_image(sqsBody.Src.Image, sqsBody.Dst.Image); err != nil {
+			fmt.Printf("log.Logger:")
+			return err
+		}
+	}
+	return nil
+}
+
 func main() {
-	lambda.Start(handler)
+	var trigger = os.Getenv("TRIGGER")
+	switch trigger {
+		case "Function":
+			lambda.Start(function_handler)
+		case "SQS":
+			lambda.Start(sqs_handler)
+	}
+
 }
