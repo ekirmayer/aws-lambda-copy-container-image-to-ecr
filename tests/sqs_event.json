@@ -1,10 +1,16 @@
 {
     "src" : {
-        "image": "5555555555.dkr.ecr.us-east-1.amazonaws.com/quay/jetstack/cert-manager-controller:v1.14.5",
-        "account": "null"
+        "type": "quay",
+        "role": null,
+        "image": "quay/jetstack/cert-manager-controller:v1.14.5",
+        "account": "5555555555",
+        "region": "us-east-1"
     },
     "dst" : {
-        "image": "5555555555.dkr.ecr.us-east-1.amazonaws.com/lambda/go/tester:nginx-test.1",
-        "account": "5555555555"
+        "type": "ecr",
+        "role": null,
+        "image": "nginx:nginx-test.1",
+        "account": "999999999999",
+        "region": "eu-west-1"
     }
 }

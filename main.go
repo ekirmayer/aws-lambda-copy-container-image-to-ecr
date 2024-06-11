@@ -4,52 +4,29 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-
-	ecr "github.com/awslabs/amazon-ecr-credential-helper/ecr-login"
-	"github.com/awslabs/amazon-ecr-credential-helper/ecr-login/api"
-	"github.com/google/go-containerregistry/pkg/authn"
-	"github.com/google/go-containerregistry/pkg/crane"
-	"github.com/google/go-containerregistry/pkg/logs"
 )
 
-type RequestBody struct {
-	Src  string `json:"src"`
-	Dest string `json:"dest"`
-}
-
-type SqsBody struct {
+type EventBody struct {
 	Src struct {
 		Image   string `json:"image"`
 		Account string `json:"account"`
+		Region  string `json:"region"`
+		Role    string `json:"role"`
+		Type    string `json:"type"`
 	} `json:"src"`
 	Dst struct {
 		Image   string `json:"image"`
 		Account string `json:"account"`
+		Region  string `json:"region"`
+		Role    string `json:"role"`
+		Type    string `json:"type"`
 	} `json:"dst"`
-}
-
-func init() {
-	logs.Warn.SetOutput(os.Stderr)
-	logs.Progress.SetOutput(os.Stderr)
-}
-
-func copy_image(src string, dst string) (error) {
-	log.Printf("COPY EVENT: Copy %s to %s", src, dst)
-
-	ecrHelper := ecr.NewECRHelper(ecr.WithClientFactory(api.DefaultClientFactory{}))
-
-	if err := crane.Copy(src, dst, crane.WithAuthFromKeychain(authn.NewMultiKeychain(authn.DefaultKeychain, authn.NewKeychainFromHelper(ecrHelper)))); err != nil {
-		
-		// cancel()
-		fmt.Printf("log.Logger:")
-		return err
-	}
-	return nil
 }
 
 func function_handler(ctx context.Context, event events.LambdaFunctionURLRequest) (events.LambdaFunctionURLResponse, error) {
@@ -64,7 +41,7 @@ func function_handler(ctx context.Context, event events.LambdaFunctionURLRequest
 		}, nil
 	}
 
-	var requestBody RequestBody
+	var requestBody EventBody
 
 	if err := json.Unmarshal([]byte(event.Body), &requestBody); err != nil {
 		return events.LambdaFunctionURLResponse{
@@ -72,9 +49,8 @@ func function_handler(ctx context.Context, event events.LambdaFunctionURLRequest
 			Body:       "Invalid request body",
 		}, nil
 	}
-
-
-	if err := copy_image(requestBody.Src, requestBody.Dest); err != nil {
+	srcRepository, dstRepository := setup_registries(requestBody)
+	if err := copy_image(srcRepository, dstRepository); err != nil {
 		// cancel()
 		fmt.Printf("log.Logger:")
 		return events.LambdaFunctionURLResponse{
@@ -84,19 +60,20 @@ func function_handler(ctx context.Context, event events.LambdaFunctionURLRequest
 	}
 	return events.LambdaFunctionURLResponse{
 		StatusCode: 200,
-		Body:       fmt.Sprintf("COPY EVENT: Copy %s to %s", requestBody.Src, requestBody.Dest),
+		Body:       fmt.Sprintf("COPY EVENT: Copy %s to %s", srcRepository, dstRepository),
 	}, nil
 }
 
-func sqs_handler(ctx context.Context, sqsEvent events.SQSEvent) (error) {
-	var sqsBody SqsBody
+func sqs_handler(ctx context.Context, sqsEvent events.SQSEvent) error {
+	var sqsBody EventBody
 	for _, message := range sqsEvent.Records {
 		fmt.Printf("The message %s for event source %s = %s \n", message.MessageId, message.EventSource, message.Body)
 		if err := json.Unmarshal([]byte(message.Body), &sqsBody); err != nil {
 			return err
 		}
+		srcRepository, dstRepository := setup_registries(sqsBody)
 
-		if err := copy_image(sqsBody.Src.Image, sqsBody.Dst.Image); err != nil {
+		if err := copy_image(srcRepository, dstRepository); err != nil {
 			fmt.Printf("log.Logger:")
 			return err
 		}
@@ -104,13 +81,71 @@ func sqs_handler(ctx context.Context, sqsEvent events.SQSEvent) (error) {
 	return nil
 }
 
+
+func setup_registries(images EventBody) (string, string) {
+	var srcRegistry string
+	var srcRepository string
+	var dstRegistry string
+	var dstRepository string
+	
+
+	if images.Src.Type == "ecr" {
+		srcToken, _ := EcrGetToken(images.Src.Region, images.Src.Role)
+		srcRegistry = fmt.Sprintf("%s.dkr.ecr.%s.amazonaws.com", images.Src.Account, images.Src.Region)
+		dockerConfig.AddRegistry(srcRegistry, srcToken)
+		srcRepository = fmt.Sprintf("%s/%s", srcRegistry, images.Src.Image)
+	}
+
+	if images.Src.Type == "ecr" {
+		dstToken, _ := EcrGetToken(images.Dst.Region, images.Dst.Role)
+		dstRegistry = fmt.Sprintf("%s.dkr.ecr.%s.amazonaws.com", images.Dst.Account, images.Dst.Region)
+		dockerConfig.AddRegistry(dstRegistry, dstToken)
+		dstRepository = fmt.Sprintf("%s/%s", dstRegistry, images.Dst.Image)
+	}
+
+	dockerFilePath, _ := GenerateAuth()
+	fmt.Println(dockerFilePath)
+	os.Setenv("DOCKER_CONFIG", dockerFilePath)
+
+	return srcRepository, dstRepository
+}
+
+func test() error {
+	log.Println("test")
+
+	jsonFile, err := os.Open("./tests/sqs_event.json")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer jsonFile.Close()
+
+	byteValue, _ := io.ReadAll(jsonFile)
+
+	var result EventBody
+	json.Unmarshal([]byte(byteValue), &result)
+
+	srcRepository, dstRepository := setup_registries(result)
+
+	
+
+	if err := copy_image(srcRepository, dstRepository); err != nil {
+		fmt.Println(err.Error())
+		return err
+	}
+	return nil
+}
+
 func main() {
 	var trigger = os.Getenv("TRIGGER")
 	switch trigger {
-		case "Function":
-			lambda.Start(function_handler)
-		case "SQS":
-			lambda.Start(sqs_handler)
+	case "Function":
+		lambda.Start(function_handler)
+	case "SQS":
+		lambda.Start(sqs_handler)
+	case "TEST":
+		test()
+	default:
+		log.Println("No trigger handler selected!")
 	}
 
 }

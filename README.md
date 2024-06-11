@@ -19,7 +19,7 @@ docker push 404105784577.dkr.ecr.us-east-1.amazonaws.com/lambda/go/tester:test.1
 ```shell
 docker run -it --rm -v ~/.aws:/.aws -e AWS_DEFAULT_PROFILE=dev -p 9100:8080 \
         --entrypoint /usr/local/bin/aws-lambda-rie \
-        docker-image:test ./main
+        lambda/go/tester ./main
 ```
 
 ```shell
@@ -29,3 +29,11 @@ curl --location --request GET 'http://localhost:9100/2015-03-31/functions/functi
     "body": "{\"src\":\"busybox:uclibc\",\"dest\":\"835389108797.dkr.ecr.eu-central-1.amazonaws.com/nginx:0.3\"}"
 }'
 ```
+
+### Scan IaC
+```shell
+trivy config --skip-dirs ./iac/.terraform  .
+```
+
+```shell
+trivy image lambda/go/tester
